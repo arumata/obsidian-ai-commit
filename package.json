@@ -1,6 +1,6 @@
 {
     "name": "obsidian-ai-commit",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "description": "Generate commit messages via DeepSeek AI for Obsidian Git",
     "main": "main.js",
     "scripts": {
