@@ -173,11 +173,12 @@ var AICommitPlugin = class extends import_obsidian.Plugin {
     }
     let diff;
     try {
-      diff = (0, import_child_process.execSync)("git diff --cached", {
+      const result = (0, import_child_process.execSync)("git diff --cached", {
         cwd: vaultPath,
         encoding: "utf-8",
         maxBuffer: 10 * 1024 * 1024
       });
+      diff = result.toString();
     } catch (e) {
       const msg = isError(e) ? e.message : String(e);
       new import_obsidian.Notice(`AI Commit: git error \u2014 ${msg}`);
@@ -242,11 +243,10 @@ ${truncatedDiff}` }
       if (gitLeaves.length > 0) {
         const textarea = gitLeaves[0].view.containerEl.querySelector(".commit-msg-input");
         if (textarea instanceof HTMLTextAreaElement) {
-          const setter = Object.getOwnPropertyDescriptor(
+          Object.getOwnPropertyDescriptor(
             HTMLTextAreaElement.prototype,
             "value"
-          ).set;
-          setter.call(textarea, message);
+          ).set.call(textarea, message);
           textarea.dispatchEvent(new Event("input", { bubbles: true }));
           textarea.focus();
         }
@@ -267,7 +267,6 @@ ${truncatedDiff}` }
     this.setButtonLoading(false);
   }
   setButtonLoading(loading) {
-    const plugin = this;
     const btn = window.activeDocument.querySelector("#ai-commit-btn");
     if (!(btn instanceof HTMLElement)) return;
     if (loading) {

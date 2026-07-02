@@ -219,11 +219,12 @@ export default class AICommitPlugin extends Plugin {
 
         let diff: string;
         try {
-            diff = execSync('git diff --cached', {
+            const result = execSync('git diff --cached', {
                 cwd: vaultPath,
                 encoding: 'utf-8',
                 maxBuffer: 10 * 1024 * 1024,
-            }) as string;
+            });
+            diff = result.toString();
         } catch (e: unknown) {
             const msg = isError(e) ? e.message : String(e);
             new Notice(`AI Commit: git error — ${msg}`);
@@ -302,11 +303,10 @@ export default class AICommitPlugin extends Plugin {
             if (gitLeaves.length > 0) {
                 const textarea = gitLeaves[0].view.containerEl.querySelector('.commit-msg-input');
                 if (textarea instanceof HTMLTextAreaElement) {
-                    const setter = Object.getOwnPropertyDescriptor(
+                    Object.getOwnPropertyDescriptor(
                         HTMLTextAreaElement.prototype,
                         'value'
-                    )!.set!;
-                    setter.call(textarea, message);
+                    )!.set!.call(textarea, message);
                     textarea.dispatchEvent(new Event('input', { bubbles: true }));
                     textarea.focus();
                 }
@@ -330,7 +330,6 @@ export default class AICommitPlugin extends Plugin {
     }
 
     setButtonLoading(this: void, loading: boolean): void {
-        const plugin = this as unknown as AICommitPlugin;
         const btn = window.activeDocument.querySelector('#ai-commit-btn');
         if (!(btn instanceof HTMLElement)) return;
         if (loading) {
