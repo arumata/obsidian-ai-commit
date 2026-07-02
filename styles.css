@@ -10,6 +10,7 @@
 .ai-commit-loading {
     animation: ai-commit-spin 1s linear infinite;
     opacity: 0.7;
+    pointer-events: none;
 }
 
 @keyframes ai-commit-spin {

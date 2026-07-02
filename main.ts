@@ -26,6 +26,14 @@ export interface AICommitSettings {
     timeout: number;
 }
 
+interface DeepSeekResponse {
+    choices?: Array<{
+        message?: {
+            content?: string;
+        };
+    }>;
+}
+
 const DEFAULT_SETTINGS: AICommitSettings = {
     apiKey: '',
     model: DEFAULT_MODEL,
@@ -43,8 +51,12 @@ function cleanMessage(raw: string): string {
         .trim();
 }
 
-function activeDocument(): Document {
-    return window.activeDocument ?? document;
+function isError(e: unknown): e is Error {
+    return e instanceof Error;
+}
+
+function isAbortError(e: unknown): boolean {
+    return isError(e) && e.name === 'AbortError';
 }
 
 function timeoutPromise(ms: number): Promise<never> {
@@ -64,8 +76,6 @@ class AICommitSettingTab extends PluginSettingTab {
     display(): void {
         const { containerEl } = this;
         containerEl.empty();
-
-        new Setting(containerEl).setName('AI Commit').setHeading();
 
         new Setting(containerEl)
             .setName('DeepSeek API Key')
@@ -151,9 +161,10 @@ export default class AICommitPlugin extends Plugin {
         });
     }
 
-    injectButton(): void {
-        const leaves = this.app.workspace.getLeavesOfType('git-view');
-        const doc = activeDocument();
+    injectButton(this: void): void {
+        const leaves = (this as unknown as AICommitPlugin).app.workspace.getLeavesOfType('git-view');
+        const plugin = this as unknown as AICommitPlugin;
+        const doc = window.activeDocument;
         for (const leaf of leaves) {
             const container = leaf.view.containerEl.querySelector('.nav-buttons-container');
             if (!container || container.querySelector('#ai-commit-btn')) continue;
@@ -164,7 +175,7 @@ export default class AICommitPlugin extends Plugin {
             btn.setAttribute('aria-label', 'Generate commit message');
             setIcon(btn, 'sparkles');
             btn.addEventListener('click', () => {
-                void this.generateAndFill();
+                void plugin.generateAndFill();
             });
 
             const commitBtn = container.querySelector('#commit-btn');
@@ -214,7 +225,8 @@ export default class AICommitPlugin extends Plugin {
                 maxBuffer: 10 * 1024 * 1024,
             }) as string;
         } catch (e: unknown) {
-            new Notice(`AI Commit: git error — ${(e as Error).message}`);
+            const msg = isError(e) ? e.message : String(e);
+            new Notice(`AI Commit: git error — ${msg}`);
             return;
         }
 
@@ -234,9 +246,6 @@ export default class AICommitPlugin extends Plugin {
         let lastError: unknown;
 
         for (let attempt = 1; attempt <= RETRIES; attempt++) {
-            const timerId = window.setTimeout(() => {}, 0);
-            void timerId; // placeholder, we manage timeout via Promise.race
-
             try {
                 if (attempt > 1) {
                     notice.setMessage(`Generating... (attempt ${attempt}/${RETRIES})`);
@@ -271,8 +280,8 @@ export default class AICommitPlugin extends Plugin {
                     throw new Error(`API ${response.status}: ${response.text}`);
                 }
 
-                const data = response.json;
-                const msg: string = (data.choices?.[0]?.message?.content as string ?? '').trim();
+                const data = response.json as DeepSeekResponse;
+                const msg = (data.choices?.[0]?.message?.content ?? '').trim();
 
                 if (!msg) {
                     throw new Error('Empty response from API');
@@ -282,7 +291,7 @@ export default class AICommitPlugin extends Plugin {
                 break;
             } catch (e: unknown) {
                 lastError = e;
-                if (attempt < RETRIES && (e as DOMException).name !== 'AbortError') {
+                if (attempt < RETRIES && !isAbortError(e)) {
                     await new Promise((r) => window.setTimeout(r, 1000 * attempt));
                 }
             }
@@ -305,14 +314,14 @@ export default class AICommitPlugin extends Plugin {
 
             notice.hide();
             const preview = message.length > 60 ? message.substring(0, 60) + '...' : message;
-            new Notice(`AI Commit: Done — ${preview}`);
+            new Notice(`Done — ${preview}`);
         } else {
             notice.hide();
-            const err = lastError as DOMException | Error;
-            if (err?.name === 'AbortError') {
-                new Notice(`AI Commit: Request timed out (${timeout / 1000}s)`);
+            const msg = isError(lastError) ? lastError.message : String(lastError ?? 'Unknown error');
+            if (isAbortError(lastError)) {
+                new Notice(`Request timed out (${timeout / 1000}s)`);
             } else {
-                new Notice(`AI Commit: ${err?.message ?? 'Unknown error'}`);
+                new Notice(msg);
             }
             console.error('AI Commit error:', lastError);
         }
@@ -320,20 +329,20 @@ export default class AICommitPlugin extends Plugin {
         this.setButtonLoading(false);
     }
 
-    setButtonLoading(loading: boolean): void {
-        const btn = document.querySelector('#ai-commit-btn');
+    setButtonLoading(this: void, loading: boolean): void {
+        const plugin = this as unknown as AICommitPlugin;
+        const btn = window.activeDocument.querySelector('#ai-commit-btn');
         if (!(btn instanceof HTMLElement)) return;
         if (loading) {
             btn.addClass('ai-commit-loading');
-            btn.style.setProperty('pointer-events', 'none');
         } else {
             btn.removeClass('ai-commit-loading');
-            btn.style.removeProperty('pointer-events');
         }
     }
 
     async loadSettings(): Promise<void> {
-        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+        const data = await this.loadData() as Partial<AICommitSettings>;
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
     }
 
     async saveSettings(): Promise<void> {
