@@ -1,0 +1,7 @@
+node_modules
+dist
+data.json
+*.js
+!esbuild.config.mjs
+!version-bump.mjs
+!main.js
