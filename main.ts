@@ -59,6 +59,16 @@ function isAbortError(e: unknown): boolean {
     return isError(e) && e.name === 'AbortError';
 }
 
+function errorMessage(e: unknown): string {
+    if (isError(e)) {
+        return e.message;
+    }
+    if (typeof e === 'string') {
+        return e;
+    }
+    return 'Unknown error';
+}
+
 function timeoutPromise(ms: number): Promise<never> {
     return new Promise((_, reject) =>
         window.setTimeout(() => reject(new DOMException('Request timed out', 'AbortError')), ms)
@@ -78,11 +88,11 @@ class AICommitSettingTab extends PluginSettingTab {
         containerEl.empty();
 
         new Setting(containerEl)
-            .setName('DeepSeek API Key')
-            .setDesc('API key from platform.deepseek.com/api_keys')
+            .setName('DeepSeek API key')
+            .setDesc('DeepSeek API key')
             .addText((text) => {
                 text
-                    .setPlaceholder('sk-...')
+                    .setPlaceholder('Sk-…')
                     .setValue(this.plugin.settings.apiKey)
                     .onChange(async (value) => {
                         this.plugin.settings.apiKey = value.trim();
@@ -123,7 +133,7 @@ class AICommitSettingTab extends PluginSettingTab {
             .setDesc('Appended to the system prompt (language, style, extra rules)')
             .addTextArea((text) => {
                 text
-                    .setPlaceholder('e.g. Always write messages in Russian')
+                    .setPlaceholder('Write concise commit messages')
                     .setValue(this.plugin.settings.customPrompt)
                     .onChange(async (value) => {
                         this.plugin.settings.customPrompt = value.trim();
@@ -207,13 +217,13 @@ export default class AICommitPlugin extends Plugin {
         const { apiKey, model, customPrompt, timeout } = this.settings;
 
         if (!apiKey) {
-            new Notice('AI Commit: Set DeepSeek API key in settings');
+            new Notice('Set DeepSeek API key in settings');
             return;
         }
 
         const vaultPath = (this.app.vault.adapter as { basePath?: string }).basePath;
         if (!vaultPath) {
-            new Notice('AI Commit: Cannot determine vault path');
+            new Notice('Cannot determine vault path');
             return;
         }
 
@@ -226,13 +236,12 @@ export default class AICommitPlugin extends Plugin {
             });
             diff = result.toString();
         } catch (e: unknown) {
-            const msg = isError(e) ? e.message : String(e);
-            new Notice(`AI Commit: git error — ${msg}`);
+            new Notice(`Git error — ${errorMessage(e)}`);
             return;
         }
 
         if (!diff.trim()) {
-            new Notice('AI Commit: No staged changes');
+            new Notice('No staged changes');
             return;
         }
 
@@ -240,7 +249,7 @@ export default class AICommitPlugin extends Plugin {
             ? diff.substring(0, 8000) + '\n...diff truncated'
             : diff;
 
-        const notice = new Notice('AI Commit: Generating...', 0);
+        const notice = new Notice('Generating...', 0);
         this.setButtonLoading(true);
 
         let message = '';
@@ -317,11 +326,10 @@ export default class AICommitPlugin extends Plugin {
             new Notice(`Done — ${preview}`);
         } else {
             notice.hide();
-            const msg = isError(lastError) ? lastError.message : String(lastError ?? 'Unknown error');
             if (isAbortError(lastError)) {
                 new Notice(`Request timed out (${timeout / 1000}s)`);
             } else {
-                new Notice(msg);
+                new Notice(errorMessage(lastError));
             }
             console.error('AI Commit error:', lastError);
         }

@@ -55,6 +55,15 @@ function isError(e) {
 function isAbortError(e) {
   return isError(e) && e.name === "AbortError";
 }
+function errorMessage(e) {
+  if (isError(e)) {
+    return e.message;
+  }
+  if (typeof e === "string") {
+    return e;
+  }
+  return "Unknown error";
+}
 function timeoutPromise(ms) {
   return new Promise(
     (_, reject) => window.setTimeout(() => reject(new DOMException("Request timed out", "AbortError")), ms)
@@ -69,8 +78,8 @@ var AICommitSettingTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian.Setting(containerEl).setName("DeepSeek API Key").setDesc("API key from platform.deepseek.com/api_keys").addText((text) => {
-      text.setPlaceholder("sk-...").setValue(this.plugin.settings.apiKey).onChange(async (value) => {
+    new import_obsidian.Setting(containerEl).setName("DeepSeek API key").setDesc("DeepSeek API key").addText((text) => {
+      text.setPlaceholder("Sk-\u2026").setValue(this.plugin.settings.apiKey).onChange(async (value) => {
         this.plugin.settings.apiKey = value.trim();
         await this.plugin.saveSettings();
       });
@@ -93,7 +102,7 @@ var AICommitSettingTab = class extends import_obsidian.PluginSettingTab {
       });
     });
     new import_obsidian.Setting(containerEl).setName("Custom instructions").setDesc("Appended to the system prompt (language, style, extra rules)").addTextArea((text) => {
-      text.setPlaceholder("e.g. Always write messages in Russian").setValue(this.plugin.settings.customPrompt).onChange(async (value) => {
+      text.setPlaceholder("Write concise commit messages").setValue(this.plugin.settings.customPrompt).onChange(async (value) => {
         this.plugin.settings.customPrompt = value.trim();
         await this.plugin.saveSettings();
       });
@@ -163,12 +172,12 @@ var AICommitPlugin = class extends import_obsidian.Plugin {
   async generateAndFill() {
     const { apiKey, model, customPrompt, timeout } = this.settings;
     if (!apiKey) {
-      new import_obsidian.Notice("AI Commit: Set DeepSeek API key in settings");
+      new import_obsidian.Notice("Set DeepSeek API key in settings");
       return;
     }
     const vaultPath = this.app.vault.adapter.basePath;
     if (!vaultPath) {
-      new import_obsidian.Notice("AI Commit: Cannot determine vault path");
+      new import_obsidian.Notice("Cannot determine vault path");
       return;
     }
     let diff;
@@ -180,16 +189,15 @@ var AICommitPlugin = class extends import_obsidian.Plugin {
       });
       diff = result.toString();
     } catch (e) {
-      const msg = isError(e) ? e.message : String(e);
-      new import_obsidian.Notice(`AI Commit: git error \u2014 ${msg}`);
+      new import_obsidian.Notice(`Git error \u2014 ${errorMessage(e)}`);
       return;
     }
     if (!diff.trim()) {
-      new import_obsidian.Notice("AI Commit: No staged changes");
+      new import_obsidian.Notice("No staged changes");
       return;
     }
     const truncatedDiff = diff.length > 8e3 ? diff.substring(0, 8e3) + "\n...diff truncated" : diff;
-    const notice = new import_obsidian.Notice("AI Commit: Generating...", 0);
+    const notice = new import_obsidian.Notice("Generating...", 0);
     this.setButtonLoading(true);
     let message = "";
     let lastError;
@@ -256,11 +264,10 @@ ${truncatedDiff}` }
       new import_obsidian.Notice(`Done \u2014 ${preview}`);
     } else {
       notice.hide();
-      const msg = isError(lastError) ? lastError.message : String(lastError ?? "Unknown error");
       if (isAbortError(lastError)) {
         new import_obsidian.Notice(`Request timed out (${timeout / 1e3}s)`);
       } else {
-        new import_obsidian.Notice(msg);
+        new import_obsidian.Notice(errorMessage(lastError));
       }
       console.error("AI Commit error:", lastError);
     }
