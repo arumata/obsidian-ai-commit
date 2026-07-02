@@ -4,8 +4,6 @@ Generate meaningful git commit messages via [DeepSeek AI](https://deepseek.com) 
 
 Adds a sparkle button next to the Commit button. Click it to generate a commit message from staged changes.
 
-![screenshot](screenshot.png)
-
 ## Features
 
 - **One-click generation** — button in Obsidian Git source control view, or via command palette
@@ -22,11 +20,11 @@ Adds a sparkle button next to the Commit button. Click it to generate a commit m
 
 ## Installation
 
-### From Community Plugins (coming soon)
+### From Community Plugins
 
 1. Open Settings → Community Plugins
-2. Browse and install "AI Commit"
-3. Enable the plugin
+2. Search "AI Commit"
+3. Install and enable
 
 ### Manual (BRAT)
 
@@ -53,7 +51,7 @@ cd ai-commit && npm install && npm run build
 ## How It Works
 
 1. Stage files in Obsidian Git
-2. Click the ✨ button (or `Ctrl+P` → "Generate AI commit message")
+2. Click the ✨ button (or `Ctrl+P` → "Generate commit message")
 3. The plugin runs `git diff --cached`, sends the diff to DeepSeek
 4. The generated message appears in the commit text area
 5. Review and click Commit

@@ -1,4 +1,4 @@
-import { Plugin, PluginSettingTab, Setting, Notice, setIcon } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, Notice, setIcon, requestUrl } from 'obsidian';
 import { execSync } from 'child_process';
 
 const DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
@@ -43,10 +43,20 @@ function cleanMessage(raw: string): string {
         .trim();
 }
 
+function activeDocument(): Document {
+    return window.activeDocument ?? document;
+}
+
+function timeoutPromise(ms: number): Promise<never> {
+    return new Promise((_, reject) =>
+        window.setTimeout(() => reject(new DOMException('Request timed out', 'AbortError')), ms)
+    );
+}
+
 class AICommitSettingTab extends PluginSettingTab {
     plugin: AICommitPlugin;
 
-    constructor(app: any, plugin: AICommitPlugin) {
+    constructor(app: App, plugin: AICommitPlugin) {
         super(app, plugin);
         this.plugin = plugin;
     }
@@ -55,7 +65,7 @@ class AICommitSettingTab extends PluginSettingTab {
         const { containerEl } = this;
         containerEl.empty();
 
-        containerEl.createEl('h2', { text: 'AI Commit' });
+        new Setting(containerEl).setName('AI Commit').setHeading();
 
         new Setting(containerEl)
             .setName('DeepSeek API Key')
@@ -92,7 +102,6 @@ class AICommitSettingTab extends PluginSettingTab {
                 slider
                     .setLimits(10, 120, 5)
                     .setValue(this.plugin.settings.timeout / 1000)
-                    .setDynamicTooltip()
                     .onChange(async (value) => {
                         this.plugin.settings.timeout = value * 1000;
                         await this.plugin.saveSettings();
@@ -124,12 +133,16 @@ export default class AICommitPlugin extends Plugin {
 
         this.addCommand({
             id: 'generate-commit-message',
-            name: 'Generate AI commit message',
-            callback: () => this.generateAndFill(),
+            name: 'Generate commit message',
+            callback: () => {
+                void this.generateAndFill();
+            },
         });
 
         this.registerEvent(
-            this.app.workspace.on('layout-change', () => this.injectButton())
+            this.app.workspace.on('layout-change', () => {
+                this.injectButton();
+            })
         );
 
         this.app.workspace.onLayoutReady(() => {
@@ -140,16 +153,19 @@ export default class AICommitPlugin extends Plugin {
 
     injectButton(): void {
         const leaves = this.app.workspace.getLeavesOfType('git-view');
+        const doc = activeDocument();
         for (const leaf of leaves) {
             const container = leaf.view.containerEl.querySelector('.nav-buttons-container');
             if (!container || container.querySelector('#ai-commit-btn')) continue;
 
-            const btn = document.createElement('div');
+            const btn = doc.createElement('div');
             btn.id = 'ai-commit-btn';
             btn.className = 'clickable-icon nav-action-button ai-commit-btn';
-            btn.setAttribute('aria-label', 'Generate AI commit message');
+            btn.setAttribute('aria-label', 'Generate commit message');
             setIcon(btn, 'sparkles');
-            btn.addEventListener('click', () => this.generateAndFill());
+            btn.addEventListener('click', () => {
+                void this.generateAndFill();
+            });
 
             const commitBtn = container.querySelector('#commit-btn');
             if (commitBtn) {
@@ -164,11 +180,12 @@ export default class AICommitPlugin extends Plugin {
         const handler = () => {
             const leaves = this.app.workspace.getLeavesOfType('git-view');
             for (const leaf of leaves) {
-                const el = leaf.view.containerEl as HTMLElement;
+                const el = leaf.view.containerEl;
                 if (el.dataset.aiCommitObserved) continue;
                 el.dataset.aiCommitObserved = '1';
-                new MutationObserver(() => this.injectButton())
-                    .observe(el, { childList: true, subtree: true });
+                new MutationObserver(() => {
+                    this.injectButton();
+                }).observe(el, { childList: true, subtree: true });
             }
         };
         this.registerEvent(this.app.workspace.on('layout-change', handler));
@@ -183,7 +200,7 @@ export default class AICommitPlugin extends Plugin {
             return;
         }
 
-        const vaultPath = (this.app.vault.adapter as any).basePath;
+        const vaultPath = (this.app.vault.adapter as { basePath?: string }).basePath;
         if (!vaultPath) {
             new Notice('AI Commit: Cannot determine vault path');
             return;
@@ -195,9 +212,9 @@ export default class AICommitPlugin extends Plugin {
                 cwd: vaultPath,
                 encoding: 'utf-8',
                 maxBuffer: 10 * 1024 * 1024,
-            });
-        } catch (e: any) {
-            new Notice(`AI Commit: git error — ${e.message}`);
+            }) as string;
+        } catch (e: unknown) {
+            new Notice(`AI Commit: git error — ${(e as Error).message}`);
             return;
         }
 
@@ -214,46 +231,48 @@ export default class AICommitPlugin extends Plugin {
         this.setButtonLoading(true);
 
         let message = '';
-        let lastError: any;
+        let lastError: unknown;
 
         for (let attempt = 1; attempt <= RETRIES; attempt++) {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), timeout);
+            const timerId = window.setTimeout(() => {}, 0);
+            void timerId; // placeholder, we manage timeout via Promise.race
 
             try {
                 if (attempt > 1) {
-                    notice.setMessage(`AI Commit: Generating... (attempt ${attempt}/${RETRIES})`);
+                    notice.setMessage(`Generating... (attempt ${attempt}/${RETRIES})`);
                 }
 
                 const systemPrompt = customPrompt
                     ? SYSTEM_PROMPT + '\n' + customPrompt
                     : SYSTEM_PROMPT;
 
-                const response = await fetch(DEEPSEEK_API_URL, {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${apiKey}`,
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        model,
-                        messages: [
-                            { role: 'system', content: systemPrompt },
-                            { role: 'user', content: `Write a commit message for:\n\n${truncatedDiff}` },
-                        ],
-                        temperature: 0.3,
-                        max_tokens: 500,
+                const response = await Promise.race([
+                    requestUrl({
+                        url: DEEPSEEK_API_URL,
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${apiKey}`,
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            model,
+                            messages: [
+                                { role: 'system', content: systemPrompt },
+                                { role: 'user', content: `Write a commit message for:\n\n${truncatedDiff}` },
+                            ],
+                            temperature: 0.3,
+                            max_tokens: 500,
+                        }),
                     }),
-                    signal: controller.signal,
-                });
+                    timeoutPromise(timeout),
+                ]);
 
-                if (!response.ok) {
-                    const errText = await response.text();
-                    throw new Error(`API ${response.status}: ${errText}`);
+                if (response.status < 200 || response.status >= 300) {
+                    throw new Error(`API ${response.status}: ${response.text}`);
                 }
 
-                const data = await response.json();
-                const msg = (data.choices?.[0]?.message?.content || '').trim();
+                const data = response.json;
+                const msg: string = (data.choices?.[0]?.message?.content as string ?? '').trim();
 
                 if (!msg) {
                     throw new Error('Empty response from API');
@@ -261,23 +280,19 @@ export default class AICommitPlugin extends Plugin {
 
                 message = cleanMessage(msg);
                 break;
-            } catch (e: any) {
+            } catch (e: unknown) {
                 lastError = e;
-                if (attempt < RETRIES && e.name !== 'AbortError') {
-                    await new Promise((r) => setTimeout(r, 1000 * attempt));
+                if (attempt < RETRIES && (e as DOMException).name !== 'AbortError') {
+                    await new Promise((r) => window.setTimeout(r, 1000 * attempt));
                 }
-            } finally {
-                clearTimeout(timeoutId);
             }
         }
 
         if (message) {
             const gitLeaves = this.app.workspace.getLeavesOfType('git-view');
             if (gitLeaves.length > 0) {
-                const textarea = gitLeaves[0].view.containerEl.querySelector(
-                    '.commit-msg-input'
-                ) as HTMLTextAreaElement | null;
-                if (textarea) {
+                const textarea = gitLeaves[0].view.containerEl.querySelector('.commit-msg-input');
+                if (textarea instanceof HTMLTextAreaElement) {
                     const setter = Object.getOwnPropertyDescriptor(
                         HTMLTextAreaElement.prototype,
                         'value'
@@ -293,10 +308,11 @@ export default class AICommitPlugin extends Plugin {
             new Notice(`AI Commit: Done — ${preview}`);
         } else {
             notice.hide();
-            if (lastError?.name === 'AbortError') {
+            const err = lastError as DOMException | Error;
+            if (err?.name === 'AbortError') {
                 new Notice(`AI Commit: Request timed out (${timeout / 1000}s)`);
             } else {
-                new Notice(`AI Commit: ${lastError?.message}`);
+                new Notice(`AI Commit: ${err?.message ?? 'Unknown error'}`);
             }
             console.error('AI Commit error:', lastError);
         }
@@ -305,14 +321,14 @@ export default class AICommitPlugin extends Plugin {
     }
 
     setButtonLoading(loading: boolean): void {
-        const btn = document.querySelector('#ai-commit-btn') as HTMLElement | null;
-        if (!btn) return;
+        const btn = document.querySelector('#ai-commit-btn');
+        if (!(btn instanceof HTMLElement)) return;
         if (loading) {
-            btn.classList.add('ai-commit-loading');
-            btn.style.pointerEvents = 'none';
+            btn.addClass('ai-commit-loading');
+            btn.style.setProperty('pointer-events', 'none');
         } else {
-            btn.classList.remove('ai-commit-loading');
-            btn.style.pointerEvents = '';
+            btn.removeClass('ai-commit-loading');
+            btn.style.removeProperty('pointer-events');
         }
     }
 

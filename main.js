@@ -49,6 +49,14 @@ var DEFAULT_SETTINGS = {
 function cleanMessage(raw) {
   return raw.replace(/^```[a-z]*\n?/im, "").replace(/\n?```$/m, "").replace(/^["']|["']$/g, "").replace(/^commit message:\s*/im, "").replace(/^\w+(\([^)]*\))?!?:\s*/i, "").trim();
 }
+function activeDocument() {
+  return window.activeDocument ?? document;
+}
+function timeoutPromise(ms) {
+  return new Promise(
+    (_, reject) => window.setTimeout(() => reject(new DOMException("Request timed out", "AbortError")), ms)
+  );
+}
 var AICommitSettingTab = class extends import_obsidian.PluginSettingTab {
   plugin;
   constructor(app, plugin) {
@@ -58,7 +66,7 @@ var AICommitSettingTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "AI Commit" });
+    new import_obsidian.Setting(containerEl).setName("AI Commit").setHeading();
     new import_obsidian.Setting(containerEl).setName("DeepSeek API Key").setDesc("API key from platform.deepseek.com/api_keys").addText((text) => {
       text.setPlaceholder("sk-...").setValue(this.plugin.settings.apiKey).onChange(async (value) => {
         this.plugin.settings.apiKey = value.trim();
@@ -77,7 +85,7 @@ var AICommitSettingTab = class extends import_obsidian.PluginSettingTab {
       });
     });
     new import_obsidian.Setting(containerEl).setName("Timeout").setDesc("API request timeout in seconds").addSlider((slider) => {
-      slider.setLimits(10, 120, 5).setValue(this.plugin.settings.timeout / 1e3).setDynamicTooltip().onChange(async (value) => {
+      slider.setLimits(10, 120, 5).setValue(this.plugin.settings.timeout / 1e3).onChange(async (value) => {
         this.plugin.settings.timeout = value * 1e3;
         await this.plugin.saveSettings();
       });
@@ -97,11 +105,15 @@ var AICommitPlugin = class extends import_obsidian.Plugin {
     this.addSettingTab(new AICommitSettingTab(this.app, this));
     this.addCommand({
       id: "generate-commit-message",
-      name: "Generate AI commit message",
-      callback: () => this.generateAndFill()
+      name: "Generate commit message",
+      callback: () => {
+        void this.generateAndFill();
+      }
     });
     this.registerEvent(
-      this.app.workspace.on("layout-change", () => this.injectButton())
+      this.app.workspace.on("layout-change", () => {
+        this.injectButton();
+      })
     );
     this.app.workspace.onLayoutReady(() => {
       this.injectButton();
@@ -110,15 +122,18 @@ var AICommitPlugin = class extends import_obsidian.Plugin {
   }
   injectButton() {
     const leaves = this.app.workspace.getLeavesOfType("git-view");
+    const doc = activeDocument();
     for (const leaf of leaves) {
       const container = leaf.view.containerEl.querySelector(".nav-buttons-container");
       if (!container || container.querySelector("#ai-commit-btn")) continue;
-      const btn = document.createElement("div");
+      const btn = doc.createElement("div");
       btn.id = "ai-commit-btn";
       btn.className = "clickable-icon nav-action-button ai-commit-btn";
-      btn.setAttribute("aria-label", "Generate AI commit message");
+      btn.setAttribute("aria-label", "Generate commit message");
       (0, import_obsidian.setIcon)(btn, "sparkles");
-      btn.addEventListener("click", () => this.generateAndFill());
+      btn.addEventListener("click", () => {
+        void this.generateAndFill();
+      });
       const commitBtn = container.querySelector("#commit-btn");
       if (commitBtn) {
         commitBtn.before(btn);
@@ -134,7 +149,9 @@ var AICommitPlugin = class extends import_obsidian.Plugin {
         const el = leaf.view.containerEl;
         if (el.dataset.aiCommitObserved) continue;
         el.dataset.aiCommitObserved = "1";
-        new MutationObserver(() => this.injectButton()).observe(el, { childList: true, subtree: true });
+        new MutationObserver(() => {
+          this.injectButton();
+        }).observe(el, { childList: true, subtree: true });
       }
     };
     this.registerEvent(this.app.workspace.on("layout-change", handler));
@@ -172,38 +189,40 @@ var AICommitPlugin = class extends import_obsidian.Plugin {
     let message = "";
     let lastError;
     for (let attempt = 1; attempt <= RETRIES; attempt++) {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeout);
+      const timerId = window.setTimeout(() => {
+      }, 0);
       try {
         if (attempt > 1) {
-          notice.setMessage(`AI Commit: Generating... (attempt ${attempt}/${RETRIES})`);
+          notice.setMessage(`Generating... (attempt ${attempt}/${RETRIES})`);
         }
         const systemPrompt = customPrompt ? SYSTEM_PROMPT + "\n" + customPrompt : SYSTEM_PROMPT;
-        const response = await fetch(DEEPSEEK_API_URL, {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${apiKey}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            model,
-            messages: [
-              { role: "system", content: systemPrompt },
-              { role: "user", content: `Write a commit message for:
+        const response = await Promise.race([
+          (0, import_obsidian.requestUrl)({
+            url: DEEPSEEK_API_URL,
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${apiKey}`,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              model,
+              messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: `Write a commit message for:
 
 ${truncatedDiff}` }
-            ],
-            temperature: 0.3,
-            max_tokens: 500
+              ],
+              temperature: 0.3,
+              max_tokens: 500
+            })
           }),
-          signal: controller.signal
-        });
-        if (!response.ok) {
-          const errText = await response.text();
-          throw new Error(`API ${response.status}: ${errText}`);
+          timeoutPromise(timeout)
+        ]);
+        if (response.status < 200 || response.status >= 300) {
+          throw new Error(`API ${response.status}: ${response.text}`);
         }
-        const data = await response.json();
-        const msg = (data.choices?.[0]?.message?.content || "").trim();
+        const data = response.json;
+        const msg = (data.choices?.[0]?.message?.content ?? "").trim();
         if (!msg) {
           throw new Error("Empty response from API");
         }
@@ -212,19 +231,15 @@ ${truncatedDiff}` }
       } catch (e) {
         lastError = e;
         if (attempt < RETRIES && e.name !== "AbortError") {
-          await new Promise((r) => setTimeout(r, 1e3 * attempt));
+          await new Promise((r) => window.setTimeout(r, 1e3 * attempt));
         }
-      } finally {
-        clearTimeout(timeoutId);
       }
     }
     if (message) {
       const gitLeaves = this.app.workspace.getLeavesOfType("git-view");
       if (gitLeaves.length > 0) {
-        const textarea = gitLeaves[0].view.containerEl.querySelector(
-          ".commit-msg-input"
-        );
-        if (textarea) {
+        const textarea = gitLeaves[0].view.containerEl.querySelector(".commit-msg-input");
+        if (textarea instanceof HTMLTextAreaElement) {
           const setter = Object.getOwnPropertyDescriptor(
             HTMLTextAreaElement.prototype,
             "value"
@@ -239,10 +254,11 @@ ${truncatedDiff}` }
       new import_obsidian.Notice(`AI Commit: Done \u2014 ${preview}`);
     } else {
       notice.hide();
-      if (lastError?.name === "AbortError") {
+      const err = lastError;
+      if (err?.name === "AbortError") {
         new import_obsidian.Notice(`AI Commit: Request timed out (${timeout / 1e3}s)`);
       } else {
-        new import_obsidian.Notice(`AI Commit: ${lastError?.message}`);
+        new import_obsidian.Notice(`AI Commit: ${err?.message ?? "Unknown error"}`);
       }
       console.error("AI Commit error:", lastError);
     }
@@ -250,13 +266,13 @@ ${truncatedDiff}` }
   }
   setButtonLoading(loading) {
     const btn = document.querySelector("#ai-commit-btn");
-    if (!btn) return;
+    if (!(btn instanceof HTMLElement)) return;
     if (loading) {
-      btn.classList.add("ai-commit-loading");
-      btn.style.pointerEvents = "none";
+      btn.addClass("ai-commit-loading");
+      btn.style.setProperty("pointer-events", "none");
     } else {
-      btn.classList.remove("ai-commit-loading");
-      btn.style.pointerEvents = "";
+      btn.removeClass("ai-commit-loading");
+      btn.style.removeProperty("pointer-events");
     }
   }
   async loadSettings() {
