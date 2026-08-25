@@ -17,3 +17,9 @@
     from { transform: rotate(0deg); }
     to { transform: rotate(360deg); }
 }
+
+.commit-msg-input {
+    transition: height 0.1s ease;
+    height: var(--ai-commit-textarea-height, auto);
+    overflow-y: var(--ai-commit-textarea-overflow, hidden);
+}

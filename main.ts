@@ -102,6 +102,17 @@ function normalizeBaseUrl(url: string): string {
     return url.trim().replace(/\/+$/, '');
 }
 
+const COMMIT_TEXTAREA_MAX_HEIGHT = 240; // px — roughly 10-12 lines before it scrolls
+
+function autoResizeTextarea(textarea: HTMLTextAreaElement, maxHeight: number): void {
+    textarea.setCssProps({ '--ai-commit-textarea-height': 'auto' });
+    const contentHeight = textarea.scrollHeight;
+    textarea.setCssProps({
+        '--ai-commit-textarea-height': `${Math.min(contentHeight, maxHeight)}px`,
+        '--ai-commit-textarea-overflow': contentHeight > maxHeight ? 'auto' : 'hidden',
+    });
+}
+
 class AICommitSettingTab extends PluginSettingTab {
     plugin: AICommitPlugin;
 
@@ -490,6 +501,15 @@ export default class AICommitPlugin extends Plugin {
                         'value'
                     )!.set!.call(textarea, message);
                     textarea.dispatchEvent(new Event('input', { bubbles: true }));
+
+                    autoResizeTextarea(textarea, COMMIT_TEXTAREA_MAX_HEIGHT);
+                    if (!textarea.dataset.aiCommitAutosize) {
+                        textarea.dataset.aiCommitAutosize = '1';
+                        textarea.addEventListener('input', () =>
+                            autoResizeTextarea(textarea, COMMIT_TEXTAREA_MAX_HEIGHT)
+                        );
+                    }
+
                     textarea.focus();
                 }
             }
