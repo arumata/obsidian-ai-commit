@@ -4,4 +4,7 @@ data.json
 *.js
 !esbuild.config.mjs
 !version-bump.mjs
-!main.js
+
+# Don't include main.js in repo
+# Uploaded it to GitHub releases instead.
+main.js
