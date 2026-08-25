@@ -295,6 +295,16 @@ export default class AICommitPlugin extends Plugin {
         });
     }
 
+    onunload(): void {
+        // Prevents stale button bound to dead instance.
+        const leaves = this.app.workspace.getLeavesOfType('git-view');
+        for (const leaf of leaves) {
+            const el = leaf.view.containerEl;
+            el.querySelector('#ai-commit-btn')?.remove();
+            delete el.dataset.aiCommitObserved;
+        }
+    }
+
     injectButton(this: void): void {
         const leaves = (this as unknown as AICommitPlugin).app.workspace.getLeavesOfType('git-view');
         const plugin = this as unknown as AICommitPlugin;
@@ -328,9 +338,11 @@ export default class AICommitPlugin extends Plugin {
                 const el = leaf.view.containerEl;
                 if (el.dataset.aiCommitObserved) continue;
                 el.dataset.aiCommitObserved = '1';
-                new MutationObserver(() => {
+                const observer = new MutationObserver(() => {
                     this.injectButton();
-                }).observe(el, { childList: true, subtree: true });
+                });
+                observer.observe(el, { childList: true, subtree: true });
+                this.register(() => observer.disconnect());
             }
         };
         this.registerEvent(this.app.workspace.on('layout-change', handler));
