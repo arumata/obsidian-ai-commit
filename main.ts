@@ -2,13 +2,17 @@ import { App, Plugin, PluginSettingTab, Setting, Notice, setIcon, requestUrl } f
 import { execSync } from 'child_process';
 
 const DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
-const DEFAULT_MODEL = 'deepseek-v4-flash';
+const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-flash';
+const OLLAMA_DEFAULT_URL = 'http://localhost:11434';
+const OLLAMA_DEFAULT_MODEL = 'llama3.1';
 const RETRIES = 3;
 
-const MODEL_OPTIONS: Record<string, string> = {
+const DEEPSEEK_MODEL_OPTIONS: Record<string, string> = {
     'deepseek-v4-flash': 'DeepSeek V4 Flash',
     'deepseek-v4-pro': 'DeepSeek V4 Pro',
 };
+
+type Provider = 'deepseek' | 'ollama';
 
 const SYSTEM_PROMPT = [
     'You are an expert at writing git commit messages.',
@@ -20,8 +24,11 @@ const SYSTEM_PROMPT = [
 ].join('\n');
 
 export interface AICommitSettings {
+    provider: Provider;
     apiKey: string;
     model: string;
+    ollamaUrl: string;
+    ollamaModel: string;
     customPrompt: string;
     timeout: number;
 }
@@ -34,9 +41,25 @@ interface DeepSeekResponse {
     }>;
 }
 
+interface OllamaChatResponse {
+    message?: {
+        content?: string;
+    };
+}
+
+interface OllamaTagsResponse {
+    models?: Array<{
+        name?: string;
+        model?: string;
+    }>;
+}
+
 const DEFAULT_SETTINGS: AICommitSettings = {
+    provider: 'deepseek',
     apiKey: '',
-    model: DEFAULT_MODEL,
+    model: DEEPSEEK_DEFAULT_MODEL,
+    ollamaUrl: OLLAMA_DEFAULT_URL,
+    ollamaModel: OLLAMA_DEFAULT_MODEL,
     customPrompt: '',
     timeout: 30000,
 };
@@ -75,6 +98,10 @@ function timeoutPromise(ms: number): Promise<never> {
     );
 }
 
+function normalizeBaseUrl(url: string): string {
+    return url.trim().replace(/\/+$/, '');
+}
+
 class AICommitSettingTab extends PluginSettingTab {
     plugin: AICommitPlugin;
 
@@ -88,32 +115,24 @@ class AICommitSettingTab extends PluginSettingTab {
         containerEl.empty();
 
         new Setting(containerEl)
-            .setName('DeepSeek API key')
-            .setDesc('DeepSeek API key')
-            .addText((text) => {
-                text
-                    .setPlaceholder('Sk-…')
-                    .setValue(this.plugin.settings.apiKey)
-                    .onChange(async (value) => {
-                        this.plugin.settings.apiKey = value.trim();
-                        await this.plugin.saveSettings();
-                    });
-                text.inputEl.type = 'password';
-            });
-
-        new Setting(containerEl)
-            .setName('Model')
-            .setDesc('DeepSeek model for commit message generation')
+            .setName('Provider')
+            .setDesc('AI provider used to generate commit messages')
             .addDropdown((dropdown) => {
-                for (const key of Object.keys(MODEL_OPTIONS)) {
-                    dropdown.addOption(key, MODEL_OPTIONS[key]);
-                }
-                dropdown.setValue(this.plugin.settings.model);
+                dropdown.addOption('deepseek', 'DeepSeek (cloud)');
+                dropdown.addOption('ollama', 'Ollama (local)');
+                dropdown.setValue(this.plugin.settings.provider);
                 dropdown.onChange(async (value) => {
-                    this.plugin.settings.model = value;
+                    this.plugin.settings.provider = value as Provider;
                     await this.plugin.saveSettings();
+                    this.display();
                 });
             });
+
+        if (this.plugin.settings.provider === 'ollama') {
+            this.displayOllamaSettings(containerEl);
+        } else {
+            this.displayDeepSeekSettings(containerEl);
+        }
 
         new Setting(containerEl)
             .setName('Timeout')
@@ -142,10 +161,115 @@ class AICommitSettingTab extends PluginSettingTab {
                 text.inputEl.rows = 3;
             });
     }
+
+    private displayDeepSeekSettings(containerEl: HTMLElement): void {
+        new Setting(containerEl)
+            .setName('DeepSeek API key')
+            .setDesc('DeepSeek API key')
+            .addText((text) => {
+                text
+                    .setPlaceholder('Sk-…')
+                    .setValue(this.plugin.settings.apiKey)
+                    .onChange(async (value) => {
+                        this.plugin.settings.apiKey = value.trim();
+                        await this.plugin.saveSettings();
+                    });
+                text.inputEl.type = 'password';
+            });
+
+        new Setting(containerEl)
+            .setName('Model')
+            .setDesc('DeepSeek model for commit message generation')
+            .addDropdown((dropdown) => {
+                for (const key of Object.keys(DEEPSEEK_MODEL_OPTIONS)) {
+                    dropdown.addOption(key, DEEPSEEK_MODEL_OPTIONS[key]);
+                }
+                dropdown.setValue(this.plugin.settings.model);
+                dropdown.onChange(async (value) => {
+                    this.plugin.settings.model = value;
+                    await this.plugin.saveSettings();
+                });
+            });
+    }
+
+    private displayOllamaSettings(containerEl: HTMLElement): void {
+        new Setting(containerEl)
+            .setName('Ollama server URL')
+            .setDesc('Base URL of your local ollama server')
+            .addText((text) => {
+                text
+                    .setPlaceholder(OLLAMA_DEFAULT_URL)
+                    .setValue(this.plugin.settings.ollamaUrl)
+                    .onChange(async (value) => {
+                        this.plugin.settings.ollamaUrl = normalizeBaseUrl(value) || OLLAMA_DEFAULT_URL;
+                        await this.plugin.saveSettings();
+                    });
+            });
+
+        const modelSetting = new Setting(containerEl)
+            .setName('Ollama model')
+            .setDesc('Name of a model pulled in ollama (e.g. "llama3.1" or "qwen2.5-coder")');
+
+        if (this.plugin.detectedOllamaModels.length > 0) {
+            modelSetting.addDropdown((dropdown) => {
+                for (const name of this.plugin.detectedOllamaModels) {
+                    dropdown.addOption(name, name);
+                }
+                if (
+                    this.plugin.settings.ollamaModel &&
+                    !this.plugin.detectedOllamaModels.includes(this.plugin.settings.ollamaModel)
+                ) {
+                    dropdown.addOption(this.plugin.settings.ollamaModel, this.plugin.settings.ollamaModel);
+                }
+                dropdown.setValue(this.plugin.settings.ollamaModel);
+                dropdown.onChange(async (value) => {
+                    this.plugin.settings.ollamaModel = value;
+                    await this.plugin.saveSettings();
+                });
+            });
+        } else {
+            modelSetting.addText((text) => {
+                text
+                    .setPlaceholder(OLLAMA_DEFAULT_MODEL)
+                    .setValue(this.plugin.settings.ollamaModel)
+                    .onChange(async (value) => {
+                        this.plugin.settings.ollamaModel = value.trim();
+                        await this.plugin.saveSettings();
+                    });
+            });
+        }
+
+        modelSetting.addExtraButton((button) => {
+            button
+                .setIcon('refresh-cw')
+                .setTooltip('Detect installed models')
+                .onClick(async () => {
+                    button.setDisabled(true);
+                    try {
+                        const models = await this.plugin.fetchOllamaModels();
+                        if (models.length === 0) {
+                            new Notice('No models found — pull one with `ollama pull <model>`');
+                        } else {
+                            this.plugin.detectedOllamaModels = models;
+                            if (!this.plugin.settings.ollamaModel) {
+                                this.plugin.settings.ollamaModel = models[0];
+                                await this.plugin.saveSettings();
+                            }
+                            this.display();
+                        }
+                    } catch (e: unknown) {
+                        new Notice(`Could not reach Ollama — ${errorMessage(e)}`);
+                    } finally {
+                        button.setDisabled(false);
+                    }
+                });
+        });
+    }
 }
 
 export default class AICommitPlugin extends Plugin {
     declare settings: AICommitSettings;
+    detectedOllamaModels: string[] = [];
 
     async onload(): Promise<void> {
         await this.loadSettings();
@@ -213,11 +337,32 @@ export default class AICommitPlugin extends Plugin {
         handler();
     }
 
-    async generateAndFill(): Promise<void> {
-        const { apiKey, model, customPrompt, timeout } = this.settings;
+    async fetchOllamaModels(): Promise<string[]> {
+        const baseUrl = normalizeBaseUrl(this.settings.ollamaUrl) || OLLAMA_DEFAULT_URL;
+        const response = await requestUrl({
+            url: `${baseUrl}/api/tags`,
+            method: 'GET',
+        });
 
-        if (!apiKey) {
+        if (response.status < 200 || response.status >= 300) {
+            throw new Error(`Ollama ${response.status}: ${response.text}`);
+        }
+
+        const data = response.json as OllamaTagsResponse;
+        return (data.models ?? [])
+            .map((m) => m.name ?? m.model ?? '')
+            .filter((name) => name.length > 0);
+    }
+
+    async generateAndFill(): Promise<void> {
+        const { provider, apiKey, model, ollamaUrl, ollamaModel, customPrompt, timeout } = this.settings;
+
+        if (provider === 'deepseek' && !apiKey) {
             new Notice('Set DeepSeek API key in settings');
+            return;
+        }
+        if (provider === 'ollama' && !ollamaModel.trim()) {
+            new Notice('Set ollama model in settings');
             return;
         }
 
@@ -265,24 +410,39 @@ export default class AICommitPlugin extends Plugin {
                     ? SYSTEM_PROMPT + '\n' + customPrompt
                     : SYSTEM_PROMPT;
 
-                const response = await Promise.race([
-                    requestUrl({
-                        url: DEEPSEEK_API_URL,
-                        method: 'POST',
-                        headers: {
-                            'Authorization': `Bearer ${apiKey}`,
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify({
+                const messages = [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: `Write a commit message for:\n\n${truncatedDiff}` },
+                ];
+
+                const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+                if (provider === 'deepseek') {
+                    headers['Authorization'] = `Bearer ${apiKey}`;
+                }
+
+                const requestParams = {
+                    url: provider === 'ollama'
+                        ? `${normalizeBaseUrl(ollamaUrl) || OLLAMA_DEFAULT_URL}/api/chat`
+                        : DEEPSEEK_API_URL,
+                    method: 'POST' as const,
+                    headers,
+                    body: provider === 'ollama'
+                        ? JSON.stringify({
+                            model: ollamaModel,
+                            messages,
+                            stream: false,
+                            options: { temperature: 0.3 },
+                        })
+                        : JSON.stringify({
                             model,
-                            messages: [
-                                { role: 'system', content: systemPrompt },
-                                { role: 'user', content: `Write a commit message for:\n\n${truncatedDiff}` },
-                            ],
+                            messages,
                             temperature: 0.3,
                             max_tokens: 500,
                         }),
-                    }),
+                };
+
+                const response = await Promise.race([
+                    requestUrl(requestParams),
                     timeoutPromise(timeout),
                 ]);
 
@@ -290,8 +450,9 @@ export default class AICommitPlugin extends Plugin {
                     throw new Error(`API ${response.status}: ${response.text}`);
                 }
 
-                const data = response.json as DeepSeekResponse;
-                const msg = (data.choices?.[0]?.message?.content ?? '').trim();
+                const msg = provider === 'ollama'
+                    ? ((response.json as OllamaChatResponse).message?.content ?? '').trim()
+                    : ((response.json as DeepSeekResponse).choices?.[0]?.message?.content ?? '').trim();
 
                 if (!msg) {
                     throw new Error('Empty response from API');
@@ -328,6 +489,8 @@ export default class AICommitPlugin extends Plugin {
             notice.hide();
             if (isAbortError(lastError)) {
                 new Notice(`Request timed out (${timeout / 1000}s)`);
+            } else if (provider === 'ollama') {
+                new Notice(`${errorMessage(lastError)} — is Ollama running?`);
             } else {
                 new Notice(errorMessage(lastError));
             }
