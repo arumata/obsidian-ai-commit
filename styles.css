@@ -21,5 +21,17 @@
 .commit-msg-input {
     transition: height 0.1s ease;
     height: var(--ai-commit-textarea-height, auto);
-    overflow-y: var(--ai-commit-textarea-overflow, hidden);
+    /* !important: obsidian-git's own scoped rule (.commit-msg-input.svelte-*)
+       has higher specificity and forces overflow:hidden, which silently
+       clipped long messages instead of letting them scroll. Only overflow-y
+       needs this — obsidian-git doesn't declare height, so that rule already
+       wins on its own. */
+    overflow-y: var(--ai-commit-textarea-overflow, hidden) !important;
+    /* Keep the box scrollable without showing a scrollbar track. */
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+.commit-msg-input::-webkit-scrollbar {
+    display: none;
 }
