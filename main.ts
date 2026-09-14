@@ -1,4 +1,5 @@
 import { App, Plugin, PluginSettingTab, Setting, Notice, setIcon, requestUrl } from 'obsidian';
+import type { TextComponent, DropdownComponent } from 'obsidian';
 import { execSync } from 'child_process';
 
 const DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
@@ -262,6 +263,16 @@ class AICommitSettingTab extends PluginSettingTab {
     private displayOllamaSettings(containerEl: HTMLElement): void {
         const renderVersion = this.renderVersion;
         let requestVersion = 0;
+        let modelInput: TextComponent;
+        let installedModels: DropdownComponent;
+        const resetModels = () => {
+            installedModels.selectEl.empty();
+            installedModels.addOption('', 'Refresh to load models').setValue('').setDisabled(true);
+        };
+        const syncSelection = () => {
+            const model = this.plugin.settings.ollamaModel;
+            installedModels.setValue(Array.from(installedModels.selectEl.options).some(option => option.value === model) ? model : '');
+        };
         new Setting(containerEl)
             .setName('Ollama server URL')
             .setDesc('Base URL of your ollama server')
@@ -272,7 +283,7 @@ class AICommitSettingTab extends PluginSettingTab {
                         const url = normalizeBaseUrl(value) || OLLAMA_DEFAULT_URL;
                         if (url !== this.plugin.settings.ollamaUrl) {
                             requestVersion++;
-                            suggestions.empty();
+                            resetModels();
                             this.plugin.settings.ollamaUrl = url;
                         }
                         await this.plugin.saveSettings();
@@ -282,16 +293,15 @@ class AICommitSettingTab extends PluginSettingTab {
         const modelSetting = new Setting(containerEl)
             .setName('Ollama model')
             .setDesc('Type a model name or choose an installed model after refreshing');
-        const suggestions = modelSetting.controlEl.createEl('datalist');
-        suggestions.id = `ai-commit-ollama-models-${renderVersion}`;
         modelSetting.addText((text) => {
+            modelInput = text;
             text.setPlaceholder(OLLAMA_DEFAULT_MODEL)
                 .setValue(this.plugin.settings.ollamaModel)
                 .onChange(async (value) => {
                     this.plugin.settings.ollamaModel = value.trim();
+                    syncSelection();
                     await this.plugin.saveSettings();
                 });
-            text.inputEl.setAttribute('list', suggestions.id);
         });
         modelSetting.addExtraButton((button) => {
             button.setIcon('refresh-cw')
@@ -300,13 +310,17 @@ class AICommitSettingTab extends PluginSettingTab {
                     const version = ++requestVersion;
                     const url = this.plugin.settings.ollamaUrl;
                     const isCurrent = () => version === requestVersion && renderVersion === this.renderVersion
-                        && url === this.plugin.settings.ollamaUrl && suggestions.isConnected;
+                        && url === this.plugin.settings.ollamaUrl && installedModels.selectEl.isConnected;
                     button.setDisabled(true);
-                    suggestions.empty();
+                    resetModels();
                     try {
                         const models = await this.plugin.fetchOllamaModels(url);
                         if (!isCurrent()) return;
-                        for (const name of models) suggestions.createEl('option', { value: name });
+                        installedModels.selectEl.empty();
+                        installedModels.addOption('', models.length ? 'Choose a model' : 'No installed models');
+                        for (const name of models) installedModels.addOption(name, name);
+                        installedModels.setDisabled(models.length === 0);
+                        syncSelection();
                         if (models.length === 0) new Notice('No models found — pull one with `ollama pull <model>`');
                     } catch (e: unknown) {
                         if (isCurrent()) new Notice(`Could not reach Ollama — ${errorMessage(e)}`);
@@ -315,6 +329,19 @@ class AICommitSettingTab extends PluginSettingTab {
                     }
                 });
         });
+        new Setting(containerEl)
+            .setName('Installed models')
+            .setDesc('Refresh above, then select a model to use')
+            .addDropdown((dropdown) => {
+                installedModels = dropdown;
+                resetModels();
+                dropdown.onChange(async (value) => {
+                    if (!value) return;
+                    modelInput.setValue(value);
+                    this.plugin.settings.ollamaModel = value;
+                    await this.plugin.saveSettings();
+                });
+            });
     }
 
 }

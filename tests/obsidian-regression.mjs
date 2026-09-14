@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 const port = process.env.OBSIDIAN_TEST_PORT || '19222';
 const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-const ws = new WebSocket(pages.find(p => p.type === 'page').webSocketDebuggerUrl);
+const ws = new WebSocket(pages.find(p => p.type === 'page' && p.url === 'app://obsidian.md/index.html').webSocketDebuggerUrl);
 await new Promise(r => ws.addEventListener('open', r, {once: true}));
 async function probe() {
     if (app.vault.adapter.basePath !== '/tmp/obsidian-pr1-runtime/vault') throw new Error('Not the isolated test vault');
@@ -50,17 +50,18 @@ async function probe() {
         check('new view is sized',t.clientHeight<=240,t.clientHeight);
         check('one live button',document.querySelectorAll('#ai-commit-btn').length===1,document.querySelectorAll('#ai-commit-btn').length);
         app.setting.open();app.setting.openTabById('ai-commit');await settle();
-        const row=name=>[...document.querySelectorAll('.setting-item')].find(e=>e.querySelector('.setting-item-name')?.textContent===name);
+        const settingsDocument=app.setting.activeTab.containerEl.ownerDocument;
+        const row=name=>[...settingsDocument.querySelectorAll('.setting-item')].find(e=>e.querySelector('.setting-item-name')?.textContent===name);
         const modelRow=()=>row('Ollama model');
         const refresh=()=>modelRow().querySelector('.extra-setting-button').click();
         refresh();await settle();
         check('manual model remains after detection',!!modelRow().querySelector('input'),modelRow().innerText);
         fixture.models=[];refresh();await settle();
-        check('empty detection clears suggestions',!document.querySelector('datalist option[value="model-a"]') && ![...modelRow().querySelectorAll('select option')].some(o=>o.value==='model-a'),modelRow().innerHTML);
+        check('empty detection clears suggestions',![...row('Installed models').querySelectorAll('select option')].some(o=>o.value==='model-a'),modelRow().innerHTML);
         fixture.models=[{name:'old-server-model'}];fixture.delay=400;refresh();
         const url=row('Ollama server URL').querySelector('input');url.value='http://127.0.0.1:19224';url.dispatchEvent(new Event('input',{bubbles:true}));
         await new Promise(r=>setTimeout(r,550));
-        check('late response from old URL ignored',!document.querySelector('datalist option[value="old-server-model"]') && ![...modelRow().querySelectorAll('option')].some(o=>o.value==='old-server-model'),modelRow().innerHTML);
+        check('late response from old URL ignored',![...row('Installed models').querySelectorAll('option')].some(o=>o.value==='old-server-model'),modelRow().innerHTML);
         app.setting.close();
     } finally {server.close();}
     return results;
