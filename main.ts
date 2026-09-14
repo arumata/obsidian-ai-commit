@@ -1,5 +1,5 @@
-import { App, Plugin, PluginSettingTab, Setting, Notice, setIcon, requestUrl } from 'obsidian';
-import type { TextComponent, DropdownComponent } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, Notice, setIcon, requestUrl, Menu } from 'obsidian';
+import type { TextComponent } from 'obsidian';
 import { execSync } from 'child_process';
 
 const DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
@@ -167,18 +167,26 @@ interface GitViewBinding {
 class AICommitSettingTab extends PluginSettingTab {
     plugin: AICommitPlugin;
     private renderVersion = 0;
+    private modelMenu: Menu | null = null;
 
     constructor(app: App, plugin: AICommitPlugin) {
         super(app, plugin);
         this.plugin = plugin;
+        plugin.register(() => this.hide());
     }
 
     display(): void {
         this.renderSettings();
     }
 
-    private renderSettings(): void {
+    hide(): void {
         this.renderVersion++;
+        this.modelMenu?.hide();
+        this.modelMenu = null;
+    }
+
+    private renderSettings(): void {
+        this.hide();
         const { containerEl } = this;
         containerEl.empty();
 
@@ -264,15 +272,6 @@ class AICommitSettingTab extends PluginSettingTab {
         const renderVersion = this.renderVersion;
         let requestVersion = 0;
         let modelInput: TextComponent;
-        let installedModels: DropdownComponent;
-        const resetModels = () => {
-            installedModels.selectEl.empty();
-            installedModels.addOption('', 'Refresh to load models').setValue('').setDisabled(true);
-        };
-        const syncSelection = () => {
-            const model = this.plugin.settings.ollamaModel;
-            installedModels.setValue(Array.from(installedModels.selectEl.options).some(option => option.value === model) ? model : '');
-        };
         new Setting(containerEl)
             .setName('Ollama server URL')
             .setDesc('Base URL of your ollama server')
@@ -283,7 +282,7 @@ class AICommitSettingTab extends PluginSettingTab {
                         const url = normalizeBaseUrl(value) || OLLAMA_DEFAULT_URL;
                         if (url !== this.plugin.settings.ollamaUrl) {
                             requestVersion++;
-                            resetModels();
+                            this.modelMenu?.hide();
                             this.plugin.settings.ollamaUrl = url;
                         }
                         await this.plugin.saveSettings();
@@ -292,36 +291,47 @@ class AICommitSettingTab extends PluginSettingTab {
 
         const modelSetting = new Setting(containerEl)
             .setName('Ollama model')
-            .setDesc('Type a model name or choose an installed model after refreshing');
+            .setDesc('Type a model name or use the arrow to choose an installed model');
         modelSetting.addText((text) => {
             modelInput = text;
             text.setPlaceholder(OLLAMA_DEFAULT_MODEL)
                 .setValue(this.plugin.settings.ollamaModel)
                 .onChange(async (value) => {
                     this.plugin.settings.ollamaModel = value.trim();
-                    syncSelection();
                     await this.plugin.saveSettings();
                 });
         });
         modelSetting.addExtraButton((button) => {
-            button.setIcon('refresh-cw')
-                .setTooltip('Detect installed models')
+            button.setIcon('chevron-down')
+                .setTooltip('Choose installed model')
                 .onClick(async () => {
                     const version = ++requestVersion;
                     const url = this.plugin.settings.ollamaUrl;
                     const isCurrent = () => version === requestVersion && renderVersion === this.renderVersion
-                        && url === this.plugin.settings.ollamaUrl && installedModels.selectEl.isConnected;
+                        && url === this.plugin.settings.ollamaUrl && modelInput.inputEl.isConnected;
+                    this.modelMenu?.hide();
                     button.setDisabled(true);
-                    resetModels();
                     try {
                         const models = await this.plugin.fetchOllamaModels(url);
                         if (!isCurrent()) return;
-                        installedModels.selectEl.empty();
-                        installedModels.addOption('', models.length ? 'Choose a model' : 'No installed models');
-                        for (const name of models) installedModels.addOption(name, name);
-                        installedModels.setDisabled(models.length === 0);
-                        syncSelection();
-                        if (models.length === 0) new Notice('No models found — pull one with `ollama pull <model>`');
+                        if (models.length === 0) {
+                            new Notice('No models found — pull one with `ollama pull <model>`');
+                            return;
+                        }
+                        const menu = new Menu();
+                        this.modelMenu = menu;
+                        for (const name of models) {
+                            menu.addItem((item) => item.setTitle(name)
+                                .setChecked(name === this.plugin.settings.ollamaModel)
+                                .onClick(async () => {
+                                    if (!isCurrent()) return;
+                                    modelInput.setValue(name);
+                                    this.plugin.settings.ollamaModel = name;
+                                    await this.plugin.saveSettings();
+                                }));
+                        }
+                        const rect = modelInput.inputEl.getBoundingClientRect();
+                        menu.showAtPosition({ x: rect.left, y: rect.bottom });
                     } catch (e: unknown) {
                         if (isCurrent()) new Notice(`Could not reach Ollama — ${errorMessage(e)}`);
                     } finally {
@@ -329,19 +339,6 @@ class AICommitSettingTab extends PluginSettingTab {
                     }
                 });
         });
-        new Setting(containerEl)
-            .setName('Installed models')
-            .setDesc('Refresh above, then select a model to use')
-            .addDropdown((dropdown) => {
-                installedModels = dropdown;
-                resetModels();
-                dropdown.onChange(async (value) => {
-                    if (!value) return;
-                    modelInput.setValue(value);
-                    this.plugin.settings.ollamaModel = value;
-                    await this.plugin.saveSettings();
-                });
-            });
     }
 
 }

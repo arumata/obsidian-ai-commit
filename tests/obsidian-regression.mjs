@@ -57,11 +57,11 @@ async function probe() {
         refresh();await settle();
         check('manual model remains after detection',!!modelRow().querySelector('input'),modelRow().innerText);
         fixture.models=[];refresh();await settle();
-        check('empty detection clears suggestions',![...row('Installed models').querySelectorAll('select option')].some(o=>o.value==='model-a'),modelRow().innerHTML);
+        check('empty detection clears suggestions',![...settingsDocument.querySelectorAll('.menu-item-title')].some(o=>o.textContent==='model-a'),modelRow().innerHTML);
         fixture.models=[{name:'old-server-model'}];fixture.delay=400;refresh();
         const url=row('Ollama server URL').querySelector('input');url.value='http://127.0.0.1:19224';url.dispatchEvent(new Event('input',{bubbles:true}));
         await new Promise(r=>setTimeout(r,550));
-        check('late response from old URL ignored',![...row('Installed models').querySelectorAll('option')].some(o=>o.value==='old-server-model'),modelRow().innerHTML);
+        check('late response from old URL ignored',![...settingsDocument.querySelectorAll('.menu-item-title')].some(o=>o.textContent==='old-server-model'),modelRow().innerHTML);
         app.setting.close();
     } finally {server.close();}
     return results;

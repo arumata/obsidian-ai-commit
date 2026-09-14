@@ -32,41 +32,40 @@ try {
     })()`);
     const separate = (await (await fetch(`${endpoint}/json/list`)).json()).some(p => p.title.startsWith('Settings'));
     settings = separate ? await connect(p => p.title.startsWith('Settings')) : main;
-    await settings.evaluate(`(async()=>{
-        window.pickerRow=name=>[...document.querySelectorAll('.setting-item')].find(e=>e.querySelector('.setting-item-name')?.textContent===name);
-        pickerRow('Ollama model').querySelector('.extra-setting-button').click();
+    await settings.evaluate(`window.pickerRow=name=>[...document.querySelectorAll('.setting-item')].find(e=>e.querySelector('.setting-item-name')?.textContent===name)`);
+    assert.equal(await settings.evaluate(`!!pickerRow('Installed models')`),false);
+    async function click(expression) {
+        const point=await settings.evaluate(`(()=>{const r=(${expression}).getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);
+        await settings.call('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',clickCount:1,...point});
+        await settings.call('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',clickCount:1,...point});
         await new Promise(r=>setTimeout(r,500));
-        const select=pickerRow('Installed models')?.querySelector('select');
-        const input=pickerRow('Ollama model').querySelector('input');
-        window.pickerEvents=[];
-        (select??input).addEventListener('change',e=>pickerEvents.push({trusted:e.isTrusted,value:e.target.value}));
-        (select??input).focus();
-    })()`);
-    const options = await settings.evaluate(`(()=>{const select=pickerRow('Installed models')?.querySelector('select'); const input=pickerRow('Ollama model').querySelector('input'); return [...(select?.options??input.list.options)].map(o=>o.value).filter(Boolean);})()`);
-    assert.ok(options.includes('qwen2.5:0.5b'), 'Fixture model must be installed in local Ollama');
-    for (const [key,code] of [['Home',36],['ArrowDown',40],['Enter',13]]) {
+    }
+    await click(`pickerRow('Ollama model').querySelector('.extra-setting-button')`);
+    const options=await settings.evaluate(`[...document.querySelectorAll('.menu-item-title')].map(e=>e.textContent)`);
+    assert.ok(options.includes('qwen2.5:0.5b'),JSON.stringify(options));
+    await click(`[...document.querySelectorAll('.menu-item')].find(e=>e.textContent.includes('qwen2.5:0.5b'))`);
+    assert.equal(await settings.evaluate(`pickerRow('Ollama model').querySelector('input').value`),'qwen2.5:0.5b');
+    assert.equal(await main.evaluate(`app.plugins.plugins['ai-commit'].settings.ollamaModel`),'qwen2.5:0.5b');
+    assert.equal(JSON.parse(fs.readFileSync('/tmp/obsidian-pr1-runtime/vault/.obsidian/plugins/ai-commit/data.json','utf8')).ollamaModel,'qwen2.5:0.5b');
+    console.log('Trusted mouse selection updates the single input and saved model',options);
+    await click(`pickerRow('Ollama model').querySelector('.extra-setting-button')`);
+    for(const [key,code] of [['ArrowDown',40],['Enter',13]]) {
         await settings.call('Input.dispatchKeyEvent',{type:'keyDown',key,code:key,windowsVirtualKeyCode:code});
         await settings.call('Input.dispatchKeyEvent',{type:'keyUp',key,code:key,windowsVirtualKeyCode:code});
     }
-    await new Promise(r=>setTimeout(r,250));
-    const selected = await settings.evaluate(`({input:pickerRow('Ollama model').querySelector('input').value,events:pickerEvents})`);
-    const stored = await main.evaluate(`app.plugins.plugins['ai-commit'].settings.ollamaModel`);
-    console.log(JSON.stringify({options,selected,stored},null,2));
-    assert.equal(selected.input,'qwen2.5:0.5b');
-    assert.equal(stored,'qwen2.5:0.5b');
-    assert.ok(selected.events.some(e=>e.trusted && e.value==='qwen2.5:0.5b'));
-    const data = JSON.parse(fs.readFileSync('/tmp/obsidian-pr1-runtime/vault/.obsidian/plugins/ai-commit/data.json','utf8'));
-    assert.equal(data.ollamaModel,'qwen2.5:0.5b');
+    await new Promise(r=>setTimeout(r,300));
+    assert.equal(await main.evaluate(`app.plugins.plugins['ai-commit'].settings.ollamaModel`),options[0]);
+    assert.equal(await settings.evaluate(`!!document.querySelector('.menu')`),false);
+    console.log('Trusted keyboard selection closes the menu and saves the first model');
     await settings.evaluate(`pickerRow('Ollama model').querySelector('input').focus()`);
     await settings.call('Input.dispatchKeyEvent',{type:'keyDown',key:'a',code:'KeyA',windowsVirtualKeyCode:65,modifiers:2});
     await settings.call('Input.dispatchKeyEvent',{type:'keyUp',key:'a',code:'KeyA',windowsVirtualKeyCode:65,modifiers:2});
     await settings.call('Input.insertText',{text:'custom-model:latest'});
     await new Promise(r=>setTimeout(r,250));
     assert.equal(await main.evaluate(`app.plugins.plugins['ai-commit'].settings.ollamaModel`),'custom-model:latest');
-    assert.equal(await settings.evaluate(`pickerRow('Installed models').querySelector('select').value`),'');
     assert.equal(JSON.parse(fs.readFileSync('/tmp/obsidian-pr1-runtime/vault/.obsidian/plugins/ai-commit/data.json','utf8')).ollamaModel,'custom-model:latest');
-    console.log('Manual entry remains editable, clears the dropdown selection, and saves');
+    console.log('Manual entry remains editable and saves');
     await main.evaluate(`(async()=>{app.setting.close();await app.plugins.disablePlugin('ai-commit');await app.plugins.enablePlugin('ai-commit');})()`);
     assert.equal(await main.evaluate(`app.plugins.plugins['ai-commit'].settings.ollamaModel`),'custom-model:latest');
-    console.log('Trusted keyboard selection updates the input and persists across plugin reload');
+    console.log('Manual entry persists across plugin reload');
 } finally { if(settings && settings!==main) settings.ws.close();main.ws.close(); }
