@@ -1,6 +1,6 @@
 {
     "name": "obsidian-ai-commit",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "description": "Generate commit messages via DeepSeek AI or a local Ollama model for Obsidian Git",
     "main": "main.js",
     "scripts": {
