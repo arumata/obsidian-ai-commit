@@ -18,8 +18,8 @@
     to { transform: rotate(360deg); }
 }
 
-.commit-msg-input {
-    transition: height 0.1s ease;
+.commit-msg-input.ai-commit-autosize {
+    box-sizing: border-box;
     height: var(--ai-commit-textarea-height, auto);
     /* !important: obsidian-git's own scoped rule (.commit-msg-input.svelte-*)
        has higher specificity and forces overflow:hidden, which silently
@@ -32,6 +32,6 @@
     -ms-overflow-style: none;
 }
 
-.commit-msg-input::-webkit-scrollbar {
+.commit-msg-input.ai-commit-autosize::-webkit-scrollbar {
     display: none;
 }

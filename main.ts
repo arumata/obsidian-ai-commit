@@ -104,17 +104,68 @@ function normalizeBaseUrl(url: string): string {
 
 const COMMIT_TEXTAREA_MAX_HEIGHT = 240; // px — roughly 10-12 lines before it scrolls
 
-function autoResizeTextarea(textarea: HTMLTextAreaElement, maxHeight: number): void {
-    textarea.setCssProps({ '--ai-commit-textarea-height': 'auto' });
-    const contentHeight = textarea.scrollHeight;
-    textarea.setCssProps({
-        '--ai-commit-textarea-height': `${Math.min(contentHeight, maxHeight)}px`,
-        '--ai-commit-textarea-overflow': contentHeight > maxHeight ? 'auto' : 'hidden',
+interface TextareaBinding {
+    schedule: () => void;
+    dispose: () => void;
+}
+
+function bindCommitTextarea(textarea: HTMLTextAreaElement): TextareaBinding {
+    const view = textarea.ownerDocument.defaultView ?? window;
+    const properties = ['--ai-commit-textarea-height', '--ai-commit-textarea-overflow'];
+    const previous = Object.fromEntries(properties.map(name => [name, textarea.style.getPropertyValue(name)]));
+    let frame: number | undefined;
+    let disposed = false;
+    let width = textarea.clientWidth;
+    const schedule = () => {
+        if (disposed || frame !== undefined) return;
+        // Svelte updates rows/value after the input handler has returned.
+        frame = view.requestAnimationFrame(() => {
+            frame = undefined;
+            if (disposed) return;
+            textarea.setCssProps({ '--ai-commit-textarea-height': '0px' });
+            const contentHeight = textarea.scrollHeight;
+            const style = view.getComputedStyle(textarea);
+            const borders = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+            const height = Math.min(contentHeight + borders, COMMIT_TEXTAREA_MAX_HEIGHT);
+            textarea.setCssProps({
+                '--ai-commit-textarea-height': `${height}px`,
+                '--ai-commit-textarea-overflow': contentHeight + borders > height ? 'auto' : 'hidden',
+            });
+        });
+    };
+    textarea.addClass('ai-commit-autosize');
+    textarea.addEventListener('input', schedule);
+    textarea.addEventListener('change', schedule);
+    const resize = new ResizeObserver(() => {
+        if (width !== textarea.clientWidth) {
+            width = textarea.clientWidth;
+            schedule();
+        }
     });
+    resize.observe(textarea);
+    schedule();
+    return {
+        schedule,
+        dispose: () => {
+            disposed = true;
+            if (frame !== undefined) view.cancelAnimationFrame(frame);
+            resize.disconnect();
+            textarea.removeEventListener('input', schedule);
+            textarea.removeEventListener('change', schedule);
+            textarea.removeClass('ai-commit-autosize');
+            textarea.setCssProps(previous);
+        },
+    };
+}
+
+interface GitViewBinding {
+    observer: MutationObserver;
+    textareas: Map<HTMLTextAreaElement, TextareaBinding>;
 }
 
 class AICommitSettingTab extends PluginSettingTab {
     plugin: AICommitPlugin;
+    private renderVersion = 0;
 
     constructor(app: App, plugin: AICommitPlugin) {
         super(app, plugin);
@@ -122,6 +173,11 @@ class AICommitSettingTab extends PluginSettingTab {
     }
 
     display(): void {
+        this.renderSettings();
+    }
+
+    private renderSettings(): void {
+        this.renderVersion++;
         const { containerEl } = this;
         containerEl.empty();
 
@@ -135,7 +191,7 @@ class AICommitSettingTab extends PluginSettingTab {
                 dropdown.onChange(async (value) => {
                     this.plugin.settings.provider = value as Provider;
                     await this.plugin.saveSettings();
-                    this.display();
+                    this.renderSettings();
                 });
             });
 
@@ -204,85 +260,72 @@ class AICommitSettingTab extends PluginSettingTab {
     }
 
     private displayOllamaSettings(containerEl: HTMLElement): void {
+        const renderVersion = this.renderVersion;
+        let requestVersion = 0;
         new Setting(containerEl)
             .setName('Ollama server URL')
-            .setDesc('Base URL of your local ollama server')
+            .setDesc('Base URL of your ollama server')
             .addText((text) => {
-                text
-                    .setPlaceholder(OLLAMA_DEFAULT_URL)
+                text.setPlaceholder(OLLAMA_DEFAULT_URL)
                     .setValue(this.plugin.settings.ollamaUrl)
                     .onChange(async (value) => {
-                        this.plugin.settings.ollamaUrl = normalizeBaseUrl(value) || OLLAMA_DEFAULT_URL;
+                        const url = normalizeBaseUrl(value) || OLLAMA_DEFAULT_URL;
+                        if (url !== this.plugin.settings.ollamaUrl) {
+                            requestVersion++;
+                            suggestions.empty();
+                            this.plugin.settings.ollamaUrl = url;
+                        }
                         await this.plugin.saveSettings();
                     });
             });
 
         const modelSetting = new Setting(containerEl)
             .setName('Ollama model')
-            .setDesc('Name of a model pulled in ollama (e.g. "llama3.1" or "qwen2.5-coder")');
-
-        if (this.plugin.detectedOllamaModels.length > 0) {
-            modelSetting.addDropdown((dropdown) => {
-                for (const name of this.plugin.detectedOllamaModels) {
-                    dropdown.addOption(name, name);
-                }
-                if (
-                    this.plugin.settings.ollamaModel &&
-                    !this.plugin.detectedOllamaModels.includes(this.plugin.settings.ollamaModel)
-                ) {
-                    dropdown.addOption(this.plugin.settings.ollamaModel, this.plugin.settings.ollamaModel);
-                }
-                dropdown.setValue(this.plugin.settings.ollamaModel);
-                dropdown.onChange(async (value) => {
-                    this.plugin.settings.ollamaModel = value;
+            .setDesc('Type a model name or choose an installed model after refreshing');
+        const suggestions = modelSetting.controlEl.createEl('datalist');
+        suggestions.id = `ai-commit-ollama-models-${renderVersion}`;
+        modelSetting.addText((text) => {
+            text.setPlaceholder(OLLAMA_DEFAULT_MODEL)
+                .setValue(this.plugin.settings.ollamaModel)
+                .onChange(async (value) => {
+                    this.plugin.settings.ollamaModel = value.trim();
                     await this.plugin.saveSettings();
                 });
-            });
-        } else {
-            modelSetting.addText((text) => {
-                text
-                    .setPlaceholder(OLLAMA_DEFAULT_MODEL)
-                    .setValue(this.plugin.settings.ollamaModel)
-                    .onChange(async (value) => {
-                        this.plugin.settings.ollamaModel = value.trim();
-                        await this.plugin.saveSettings();
-                    });
-            });
-        }
-
+            text.inputEl.setAttribute('list', suggestions.id);
+        });
         modelSetting.addExtraButton((button) => {
-            button
-                .setIcon('refresh-cw')
+            button.setIcon('refresh-cw')
                 .setTooltip('Detect installed models')
                 .onClick(async () => {
+                    const version = ++requestVersion;
+                    const url = this.plugin.settings.ollamaUrl;
+                    const isCurrent = () => version === requestVersion && renderVersion === this.renderVersion
+                        && url === this.plugin.settings.ollamaUrl && suggestions.isConnected;
                     button.setDisabled(true);
+                    suggestions.empty();
                     try {
-                        const models = await this.plugin.fetchOllamaModels();
-                        if (models.length === 0) {
-                            new Notice('No models found — pull one with `ollama pull <model>`');
-                        } else {
-                            this.plugin.detectedOllamaModels = models;
-                            if (!this.plugin.settings.ollamaModel) {
-                                this.plugin.settings.ollamaModel = models[0];
-                                await this.plugin.saveSettings();
-                            }
-                            this.display();
-                        }
+                        const models = await this.plugin.fetchOllamaModels(url);
+                        if (!isCurrent()) return;
+                        for (const name of models) suggestions.createEl('option', { value: name });
+                        if (models.length === 0) new Notice('No models found — pull one with `ollama pull <model>`');
                     } catch (e: unknown) {
-                        new Notice(`Could not reach Ollama — ${errorMessage(e)}`);
+                        if (isCurrent()) new Notice(`Could not reach Ollama — ${errorMessage(e)}`);
                     } finally {
                         button.setDisabled(false);
                     }
                 });
         });
     }
+
 }
 
 export default class AICommitPlugin extends Plugin {
     declare settings: AICommitSettings;
-    detectedOllamaModels: string[] = [];
+    private gitViews = new Map<HTMLElement, GitViewBinding>();
+    private active = false;
 
     async onload(): Promise<void> {
+        this.active = true;
         await this.loadSettings();
         this.addSettingTab(new AICommitSettingTab(this.app, this));
 
@@ -294,26 +337,55 @@ export default class AICommitPlugin extends Plugin {
             },
         });
 
-        this.registerEvent(
-            this.app.workspace.on('layout-change', () => {
-                this.injectButton();
-            })
-        );
-
-        this.app.workspace.onLayoutReady(() => {
-            this.injectButton();
-            this.observeGitView();
-        });
+        this.registerEvent(this.app.workspace.on('layout-change', () => this.syncGitViews()));
+        this.app.workspace.onLayoutReady(() => this.syncGitViews());
     }
 
     onunload(): void {
-        // Prevents stale button bound to dead instance.
-        const leaves = this.app.workspace.getLeavesOfType('git-view');
-        for (const leaf of leaves) {
-            const el = leaf.view.containerEl;
-            el.querySelector('#ai-commit-btn')?.remove();
-            delete el.dataset.aiCommitObserved;
+        this.active = false;
+        for (const [el, binding] of this.gitViews) this.disposeGitView(el, binding);
+        this.gitViews.clear();
+    }
+
+    private disposeGitView(el: HTMLElement, binding: GitViewBinding): void {
+        binding.observer.disconnect();
+        for (const textarea of binding.textareas.values()) textarea.dispose();
+        binding.textareas.clear();
+        el.querySelector('#ai-commit-btn')?.remove();
+    }
+
+    private syncGitViews(): void {
+        if (!this.active) return;
+        const containers = new Set(this.app.workspace.getLeavesOfType('git-view').map(leaf => leaf.view.containerEl));
+        for (const [el, binding] of this.gitViews) {
+            if (!containers.has(el)) {
+                this.disposeGitView(el, binding);
+                this.gitViews.delete(el);
+            }
         }
+        for (const el of containers) {
+            let binding = this.gitViews.get(el);
+            if (!binding) {
+                binding = { observer: new MutationObserver(() => this.syncGitViews()), textareas: new Map() };
+                // rows changes include native Clear and the reset after a commit.
+                // Ignore our own style mutations to avoid an observer loop.
+                binding.observer.observe(el, { childList: true, subtree: true, attributes: true, attributeFilter: ['rows'] });
+                this.gitViews.set(el, binding);
+            }
+            const textareas = new Set(el.querySelectorAll<HTMLTextAreaElement>('textarea.commit-msg-input'));
+            for (const [textarea, control] of binding.textareas) {
+                if (!textareas.has(textarea)) {
+                    control.dispose();
+                    binding.textareas.delete(textarea);
+                }
+            }
+            for (const textarea of textareas) {
+                const control = binding.textareas.get(textarea) ?? bindCommitTextarea(textarea);
+                binding.textareas.set(textarea, control);
+                control.schedule();
+            }
+        }
+        this.injectButton();
     }
 
     injectButton(this: void): void {
@@ -342,26 +414,8 @@ export default class AICommitPlugin extends Plugin {
         }
     }
 
-    observeGitView(): void {
-        const handler = () => {
-            const leaves = this.app.workspace.getLeavesOfType('git-view');
-            for (const leaf of leaves) {
-                const el = leaf.view.containerEl;
-                if (el.dataset.aiCommitObserved) continue;
-                el.dataset.aiCommitObserved = '1';
-                const observer = new MutationObserver(() => {
-                    this.injectButton();
-                });
-                observer.observe(el, { childList: true, subtree: true });
-                this.register(() => observer.disconnect());
-            }
-        };
-        this.registerEvent(this.app.workspace.on('layout-change', handler));
-        handler();
-    }
-
-    async fetchOllamaModels(): Promise<string[]> {
-        const baseUrl = normalizeBaseUrl(this.settings.ollamaUrl) || OLLAMA_DEFAULT_URL;
+    async fetchOllamaModels(url = this.settings.ollamaUrl): Promise<string[]> {
+        const baseUrl = normalizeBaseUrl(url) || OLLAMA_DEFAULT_URL;
         const response = await requestUrl({
             url: `${baseUrl}/api/tags`,
             method: 'GET',
@@ -501,14 +555,6 @@ export default class AICommitPlugin extends Plugin {
                         'value'
                     )!.set!.call(textarea, message);
                     textarea.dispatchEvent(new Event('input', { bubbles: true }));
-
-                    autoResizeTextarea(textarea, COMMIT_TEXTAREA_MAX_HEIGHT);
-                    if (!textarea.dataset.aiCommitAutosize) {
-                        textarea.dataset.aiCommitAutosize = '1';
-                        textarea.addEventListener('input', () =>
-                            autoResizeTextarea(textarea, COMMIT_TEXTAREA_MAX_HEIGHT)
-                        );
-                    }
 
                     textarea.focus();
                 }
