@@ -68,12 +68,20 @@ cd ai-commit && npm install && npm run build
 2. Make sure the Ollama server is running (`ollama serve`, or it's already running if you installed the desktop app)
 3. In AI Commit settings, set Provider to "Ollama (local)"
 4. Click the refresh icon next to "Ollama model" to auto-detect installed models, or type a model name manually
-5. Everything else works the same as with DeepSeek — nothing leaves your machine
+5. Requests go to the configured Ollama server. Generation stays on your machine when you use a local server with a local model. A remote server or cloud model can send your diff off the machine.
 
 ## Development
 
+Use Node.js 24 or later (`nvm use` reads `.nvmrc`). Obsidian 1.2.3 or later is required; the DOM helpers used by the plugin are already present in the Obsidian 1.1.13 API.
+
 ```bash
-npm install
+npm ci
 npm run dev     # Watch mode
 npm run build   # Production build
+npm test        # Request and settings regression checks
+npm run check:release # Validate release metadata
 ```
+
+The release workflow builds a draft release when a tag matching the plugin version is pushed (for example, `1.1.0`, without `v`). Review its artifacts before publishing.
+
+For UI regressions, run `node tests/obsidian-regression.mjs` against an isolated Obsidian instance with remote debugging on port 19222, this plugin and Obsidian Git, and a staged fixture in `/tmp/obsidian-pr1-runtime/vault`. The script rejects other vault paths.

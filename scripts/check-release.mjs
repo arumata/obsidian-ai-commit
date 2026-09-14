@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+const json = name => JSON.parse(readFileSync(new URL(`../${name}`, import.meta.url), 'utf8'));
+const pkg = json('package.json');
+const manifest = json('manifest.json');
+const lock = json('package-lock.json');
+const versions = json('versions.json');
+assert.match(pkg.version, /^\d+\.\d+\.\d+$/);
+assert.equal(manifest.version, pkg.version, 'manifest version');
+assert.equal(lock.version, pkg.version, 'lockfile version');
+assert.equal(lock.packages[''].version, pkg.version, 'lockfile package version');
+assert.equal(versions[pkg.version], manifest.minAppVersion, 'minimum Obsidian version');
+if (process.argv[2]) assert.equal(process.argv[2], pkg.version, 'release tag must match the plugin version without a v prefix');
+console.log(`Release metadata OK: ${pkg.version}, Obsidian >= ${manifest.minAppVersion}`);
