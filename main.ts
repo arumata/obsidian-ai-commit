@@ -516,7 +516,7 @@ export default class AICommitPlugin extends Plugin {
 
                 const messages = [
                     { role: 'system', content: systemPrompt },
-                    { role: 'user', content: `Write a commit message for:\n\n${truncatedDiff}` },
+                    { role: 'user', content: `Write a commit message for:\n\n${truncatedDiff}\n\nSummarize these changes in one short sentence. Return only the commit message, not code or diff lines.` },
                 ];
 
                 const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -535,7 +535,7 @@ export default class AICommitPlugin extends Plugin {
                             model: ollamaModel,
                             messages,
                             stream: false,
-                            options: { temperature: 0.3 },
+                            options: { temperature: 0.3, num_predict: 500 },
                         })
                         : JSON.stringify({
                             model,
@@ -562,7 +562,11 @@ export default class AICommitPlugin extends Plugin {
                     throw new Error('Empty response from API');
                 }
 
-                message = cleanMessage(msg);
+                const cleaned = cleanMessage(msg);
+                if (/^(?:diff --git |@@ |[+-]\s{2,}\S|\s*(?:const |let |var |function |class |new |[{}]))/m.test(cleaned)) {
+                    throw new Error('The model returned code or a diff instead of a commit message. Try a more capable model');
+                }
+                message = cleaned;
                 break;
             } catch (e: unknown) {
                 lastError = e;
@@ -595,7 +599,7 @@ export default class AICommitPlugin extends Plugin {
             if (isAbortError(lastError)) {
                 new Notice(`Request timed out (${timeout / 1000}s)`);
             } else if (provider === 'ollama') {
-                new Notice(`${errorMessage(lastError)} — is Ollama running?`);
+                new Notice(errorMessage(lastError));
             } else {
                 new Notice(errorMessage(lastError));
             }

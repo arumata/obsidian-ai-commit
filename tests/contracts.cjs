@@ -5,13 +5,13 @@ function harness(file, data={}, respond=()=>({status:200,json:{choices:[{message
  class Plugin {async loadData(){return data}async saveData(d){this.saved=d}}
  class Notice {constructor(t){this.text=t;notices.push(this)}setMessage(t){this.text=t}hide(){this.hidden=true}}
  const api={Plugin,PluginSettingTab:class{},Notice,requestUrl:async p=>{calls.push(p);return respond(p)}};
- const context={module:{exports:{}},require:k=>k==='obsidian'?api:k==='child_process'?{execSync:()=>diff}:require(k),console:{error(){}},Error,DOMException,window:{setTimeout:(fn,ms)=>{const id=setTimeout(fn,ms>=100?ms:0);id.unref();timers.push(id);return id},activeDocument:{querySelector:()=>null}},HTMLElement:class{}};
+ const context={module:{exports:{}},require:k=>k==='obsidian'?api:k==='child_process'?{execSync:()=>diff}:require(k),console:{error(){}},Error,DOMException,window:{setTimeout:(fn,ms)=>{const id=setTimeout(fn,ms>=10000?ms:0);if(ms>=10000)id.unref();timers.push(id);return id},activeDocument:{querySelector:()=>null}},HTMLElement:class{}};
  vm.runInNewContext(fs.readFileSync(file,'utf8'),context);const p=new context.module.exports.default();p.app={vault:{adapter:{basePath:'/fixture'}},workspace:{getLeavesOfType:()=>[]}};
  return {p,calls,notices,close:()=>timers.forEach(clearTimeout)};
 }
 async function test(name,fn){await fn();results.push({name,result:'PASS'})}
 (async()=>{
- const head=require('path').join(__dirname,'../main.js');
+ const head=process.env.TEST_BUNDLE || require('path').join(__dirname,'../main.js');
  await test('Old settings retain DeepSeek key/model/prompt and gain provider defaults',async()=>{const h=harness(head,{apiKey:'fixture',model:'deepseek-v4-pro',customPrompt:'Russian'});await h.p.loadSettings();assert.equal(h.p.settings.provider,'deepseek');assert.equal(h.p.settings.ollamaModel,'llama3.1');assert.equal(h.p.settings.model,'deepseek-v4-pro');h.close()});
  const requests=[];
  for(const [label,file] of [['head',head]]) await test(`${label}: DeepSeek request succeeds`,async()=>{const h=harness(file,{apiKey:'fixture',model:'deepseek-v4-pro',customPrompt:'Russian'});await h.p.loadSettings();await h.p.generateAndFill();assert.equal(h.calls.length,1);assert.ok(h.notices.some(n=>n.text.includes('Done')));requests.push(JSON.stringify(h.calls[0]));h.close()});
@@ -22,5 +22,6 @@ async function test(name,fn){await fn();results.push({name,result:'PASS'})}
  await test('Empty Ollama model makes no request',async()=>{const h=harness(head,{provider:'ollama',ollamaModel:'  '});await h.p.loadSettings();await h.p.generateAndFill();assert.equal(h.calls.length,0);h.close()});
  await test('Ollama tags support name/model fields and drop empty names',async()=>{const h=harness(head,{},()=>({status:200,json:{models:[{name:'a'},{model:'b'},{}]}}));await h.p.loadSettings();assert.equal(JSON.stringify(await h.p.fetchOllamaModels()),'["a","b"]');h.close()});
  await test('Ollama tags HTTP failure rejects',async()=>{const h=harness(head,{},()=>({status:500,text:'fixture failure'}));await h.p.loadSettings();await assert.rejects(h.p.fetchOllamaModels(),/500/);h.close()});
+ await test('Code and diff responses are rejected rather than reported as success',async()=>{for(const content of ['-    display() {\n-        containerEl.empty();','```js\n  new Setting(containerEl)\n    .setName("Model");\n```']){const h=harness(head,{provider:'ollama'},()=>({status:200,json:{message:{content}}}));await h.p.loadSettings();await h.p.generateAndFill();assert.ok(!h.notices.some(n=>n.text.startsWith('Done')));assert.ok(h.notices.some(n=>n.text.includes('model returned code')));h.close()}});
  console.log(JSON.stringify(results,null,2));
 })().catch(e=>{console.error(e);process.exitCode=1});
